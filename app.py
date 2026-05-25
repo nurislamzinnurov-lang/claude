@@ -230,6 +230,8 @@ if "agent_log" not in st.session_state:
     st.session_state.agent_log = []
 if "running" not in st.session_state:
     st.session_state.running = False
+if "editor_key_counter" not in st.session_state:
+    st.session_state.editor_key_counter = 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -274,6 +276,15 @@ with st.sidebar:
 # OLLAMA — JSON-РОБАСТНЫЙ ВЫЗОВ
 # ──────────────────────────────────────────────────────────────────────────────
 
+def check_ollama() -> bool:
+    """Проверка доступности локального Ollama-сервера."""
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def call_ollama(prompt: str, model: str, system: str = "") -> str:
     """Запрос к локальной Ollama. Возвращает текст ответа или пустую строку."""
     payload = {
@@ -284,7 +295,7 @@ def call_ollama(prompt: str, model: str, system: str = "") -> str:
         "options": {"temperature": 0.2, "num_predict": 512},
     }
     try:
-        resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=60)
+        resp = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=120)
         if resp.status_code != 200:
             return ""
         data = resp.json()
@@ -393,23 +404,27 @@ table_slot = st.empty()
 
 def render_table(df: pd.DataFrame):
     """Рендер премиальной таблицы Clay через st.data_editor."""
+    st.session_state.editor_key_counter += 1
+    key = f"editor_{st.session_state.editor_key_counter}"
     with table_slot.container():
-        st.data_editor(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            num_rows="fixed",
-            disabled=False,
-            column_config={
-                "Название": st.column_config.TextColumn("Название", width="large"),
-                "Сайт": st.column_config.LinkColumn("Сайт", width="medium"),
-                "Email": st.column_config.TextColumn("Email", width="medium"),
-                "Директор": st.column_config.TextColumn("Директор", width="medium"),
-                "ИНН": st.column_config.TextColumn("ИНН", width="small"),
-                "Выручка": st.column_config.TextColumn("Выручка", width="small"),
-            },
-            key=f"editor_{len(df)}_{int(time.time() * 1000) % 1_000_000}",
-        )
+        try:
+            st.data_editor(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="fixed",
+                column_config={
+                    "Название": st.column_config.TextColumn("Название", width="large"),
+                    "Сайт": st.column_config.LinkColumn("Сайт", width="medium"),
+                    "Email": st.column_config.TextColumn("Email", width="medium"),
+                    "Директор": st.column_config.TextColumn("Директор", width="medium"),
+                    "ИНН": st.column_config.TextColumn("ИНН", width="small"),
+                    "Выручка": st.column_config.TextColumn("Выручка", width="small"),
+                },
+                key=key,
+            )
+        except Exception:
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 def set_status(msg: str, active: bool = True):
@@ -428,10 +443,25 @@ if run_clicked and user_query.strip():
     st.session_state.running = True
     st.session_state.df = pd.DataFrame(columns=DEFAULT_COLUMNS)
 
+    ollama_ok = check_ollama()
+    if not ollama_ok:
+        st.warning(
+            "⚠ Ollama не отвечает на http://localhost:11434. "
+            "Проверьте, что запущена команда `ollama serve` и модель скачана: "
+            "`ollama pull llama3.1`. Сейчас агент использует запрос пользователя напрямую."
+        )
+
     # ── Шаг 1: ИИ планирует поиск ────────────────────────────────────────────
     set_status("Claygent анализирует запрос и формирует JSON-команду...")
     progress_slot.progress(0.05)
-    plan = plan_search(user_query.strip(), model=ollama_model, default_limit=max_results)
+    if ollama_ok:
+        plan = plan_search(user_query.strip(), model=ollama_model, default_limit=max_results)
+    else:
+        plan = {
+            "tool": "search_companies_ddg",
+            "query": user_query.strip(),
+            "max_results": max_results,
+        }
 
     set_status(f"Запуск инструмента: search_companies_ddg('{plan['query']}', max_results={plan['max_results']})")
     progress_slot.progress(0.15)

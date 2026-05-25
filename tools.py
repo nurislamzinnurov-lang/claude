@@ -65,15 +65,24 @@ def search_companies_ddg(query: str, max_results: int = 10) -> list:
     results: list = []
     seen_domains: set = set()
 
-    try:
-        with DDGS() as ddgs:
-            raw = list(ddgs.text(
-                keywords=query,
-                region="ru-ru",
-                safesearch="moderate",
-                max_results=max_results * 3,
-            ))
-    except Exception:
+    raw: list = []
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            with DDGS() as ddgs:
+                raw = list(ddgs.text(
+                    keywords=query,
+                    region="ru-ru",
+                    safesearch="moderate",
+                    max_results=max_results * 3,
+                ))
+            if raw:
+                break
+        except Exception as e:
+            last_err = e
+        time.sleep(1.5 * (attempt + 1))
+
+    if not raw:
         try:
             with DDGS() as ddgs:
                 raw = list(ddgs.text(keywords=query, max_results=max_results * 3))
@@ -173,20 +182,27 @@ def scrape_website_emails(domain: str) -> str:
     seen: set = set()
 
     for url in candidate_paths:
+        text = ""
         try:
             jina_url = f"https://r.jina.ai/{url}"
-            resp = requests.get(jina_url, headers=HEADERS, timeout=15)
-            if resp.status_code != 200 or not resp.text:
-                continue
-            text = resp.text
-        except Exception:
-            try:
-                resp = requests.get(url, headers=HEADERS, timeout=10)
-                if resp.status_code != 200:
-                    continue
+            resp = requests.get(jina_url, headers=HEADERS, timeout=20)
+            if resp.status_code == 200 and resp.text:
                 text = resp.text
+        except Exception:
+            text = ""
+
+        if not text:
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
+                if resp.status_code == 200:
+                    text = resp.text
             except Exception:
-                continue
+                text = ""
+
+        if not text:
+            continue
+
+        time.sleep(0.4)
 
         try:
             matches = EMAIL_REGEX.findall(text)
