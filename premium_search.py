@@ -66,7 +66,9 @@ EMAIL_PRIORITY = ("marketing@", "info@", "sales@", "pr@", "director@",
                   "manager@", "office@", "contact@", "hello@", "mail@", "reception@")
 JUNK_EMAILS = ("example.", "sentry", "wixpress", "yourdomain", "noreply", "no-reply",
                "donotreply", "@2x", "@3x", "domain.com", "site.com", "test@",
-               "u003e", "u003c", "react.", ".png", ".jpg", ".jpeg", ".gif", ".svg")
+               "u003e", "u003c", "react.", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+               "rating@mail.ru", "counter@", "metrika@", "@sentry.", "@wix.",
+               "name@", "your@", "user@", "email@example", "abc@", "company@")
 CONTACT_KEYWORDS = ("контакт", "contact", "о нас", "about", "связ", "написать",
                     "наши контакты")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".premium_search.json")
@@ -180,18 +182,102 @@ def ddg_html_search(query, max_results, log):
     return out
 
 
+def startpage_search(query, max_results, log):
+    out, seen = [], set()
+    try:
+        r = requests.get("https://www.startpage.com/sp/search",
+                         params={"query": query, "cat": "web"},
+                         headers=random_headers(), timeout=20)
+    except Exception as e:
+        log(f"  startpage error: {e}")
+        return out
+    if r.status_code != 200:
+        return out
+    soup = BeautifulSoup(r.text, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href.startswith("http") or not ok_host(href):
+            continue
+        if "startpage.com" in href:
+            continue
+        host = urlparse(href).netloc.lower().replace("www.", "")
+        if host in seen:
+            continue
+        seen.add(host)
+        root = f"{urlparse(href).scheme}://{urlparse(href).netloc}"
+        out.append((root, a.get_text(strip=True) or host))
+        if len(out) >= max_results:
+            break
+    return out
+
+
+def yahoo_search(query, max_results, log):
+    out, seen = [], set()
+    try:
+        r = requests.get("https://search.yahoo.com/search",
+                         params={"p": query},
+                         headers=random_headers(), timeout=20)
+    except Exception as e:
+        log(f"  yahoo error: {e}")
+        return out
+    if r.status_code != 200:
+        return out
+    soup = BeautifulSoup(r.text, "html.parser")
+    for h3 in soup.find_all("h3"):
+        a = h3.find("a", href=True)
+        if not a:
+            continue
+        href = a["href"]
+        href = re.sub(r"/RK=\d+/RS=.*$", "", href)
+        if not href.startswith("http") or not ok_host(href):
+            continue
+        host = urlparse(href).netloc.lower().replace("www.", "")
+        if host in seen:
+            continue
+        seen.add(host)
+        root = f"{urlparse(href).scheme}://{urlparse(href).netloc}"
+        out.append((root, a.get_text(strip=True) or host))
+        if len(out) >= max_results:
+            break
+    return out
+
+
 def search(query, max_results, log):
-    out = ddg_lite_search(query, max_results, log)
-    if len(out) < 3:
-        log(f"  lite вернул {len(out)}, пробую html-ddg...")
-        time.sleep(random.uniform(1.5, 3.0))
-        more = ddg_html_search(query, max_results, log)
-        seen = {urlparse(u).netloc.lower().replace("www.", "") for u, _ in out}
-        for u, n in more:
+    seen = set()
+    out = []
+
+    def add(items):
+        for u, n in items:
             host = urlparse(u).netloc.lower().replace("www.", "")
-            if host not in seen:
-                out.append((u, n))
+            if host and host not in seen:
                 seen.add(host)
+                out.append((u, n))
+
+    engines = [
+        ("DuckDuckGo Lite", ddg_lite_search),
+        ("DuckDuckGo HTML", ddg_html_search),
+        ("Startpage",       startpage_search),
+        ("Yahoo",           yahoo_search),
+    ]
+
+    for name, fn in engines:
+        if len(out) >= max_results:
+            break
+        try:
+            res = fn(query, max_results, log)
+        except Exception as e:
+            log(f"  {name} error: {e}")
+            res = []
+        if res:
+            before = len(out)
+            add(res)
+            log(f"  {name}: +{len(out) - before} (всего {len(out)})")
+        else:
+            log(f"  {name}: 0")
+        if len(out) >= 3:
+            continue
+        time.sleep(random.uniform(1.0, 2.0))
+
     return out[:max_results]
 
 
